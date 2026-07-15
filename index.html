@@ -238,13 +238,15 @@
    ========================================================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {
-  getFirestore, doc, setDoc, getDoc, onSnapshot
+  getFirestore, collection, doc, setDoc, updateDoc, onSnapshot, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const fbApp = initializeApp(firebaseConfig);
 const dbFS = getFirestore(fbApp);
 const STORE_DOC = doc(dbFS, "kiko_sushi", "store");
+const ORDERS_COL = collection(dbFS, "orders");
+const orderDocRef = (id) => doc(dbFS, "orders", id);
 
 /* =========================================================
    KIKO SUSHI — نظام إدارة داخلي + صفحة طلب للعميل (نموذج أولي)
@@ -319,36 +321,94 @@ function normalizeData(d){
   if(!d.expenses) d.expenses = [];
   if(!d.units || !d.units.length) d.units = ["جم","كيلو","مل","حبة"];
   else if(!d.units.includes("كيلو")) d.units.push("كيلو");
+  if(!d.orders) d.orders = [];
   return d;
+}
+
+function storePayload(d){
+  return {
+    ingredients: d.ingredients || [],
+    products: d.products || [],
+    expenses: d.expenses || [],
+    units: d.units || ["جم","كيلو","مل","حبة"]
+  };
 }
 
 let DATA = defaultData(); // بيانات مبدئية لحين وصول أول نسخة حقيقية من Firestore
 let fbReady = false;
+let storeReady = false;
+let ordersReady = false;
+let legacyMigrationStarted = false;
 
-// أي تعديل يُحدّث الواجهة فورًا محليًا، ثم يُرفع لـ Firestore في الخلفية
-// (باقي الأجهزة المفتوحة على نفس الرابط تستلم التحديث تلقائيًا عبر onSnapshot تحت)
+function refreshReadyState(){
+  fbReady = storeReady && ordersReady;
+  render();
+}
+
+// يحفظ بيانات المتجر فقط. الطلبات أصبحت في Collection مستقلة باسم orders.
 function saveData(d){
   DATA = d;
   render();
-  setDoc(STORE_DOC, d).catch(err=>{
+  setDoc(STORE_DOC, storePayload(d)).catch(err=>{
     console.error(err);
     showToast("تعذر الحفظ على الخادم — تحقق من الاتصال بالإنترنت وإعدادات Firebase");
   });
 }
 
-// اشتراك مباشر (Real-time): أي تغيير من أي جهاز/متصفح يصل هنا فورًا لكل من يفتح الصفحة
-onSnapshot(STORE_DOC, (snap)=>{
+async function saveNewOrderWithInventory(order){
+  const batch = writeBatch(dbFS);
+  batch.set(orderDocRef(order.id), order);
+  batch.set(STORE_DOC, storePayload(DATA));
+  await batch.commit();
+}
+
+// بيانات المخزون والمنتجات والمصاريف
+onSnapshot(STORE_DOC, async (snap)=>{
   if(snap.exists()){
-    DATA = normalizeData(snap.data());
+    const raw = snap.data();
+    const legacyOrders = Array.isArray(raw.orders) ? raw.orders : [];
+    const normalized = normalizeData(raw);
+    DATA = { ...normalized, orders: DATA.orders || [] };
+
+    // ترحيل تلقائي لمرة واحدة للطلبات القديمة من Array إلى Collection مستقلة.
+    if(legacyOrders.length && !legacyMigrationStarted){
+      legacyMigrationStarted = true;
+      try{
+        const batch = writeBatch(dbFS);
+        legacyOrders.forEach(order=>{
+          if(order && order.id) batch.set(orderDocRef(order.id), order, { merge:true });
+        });
+        batch.set(STORE_DOC, storePayload(normalized));
+        await batch.commit();
+        showToast("تم نقل الطلبات القديمة إلى مجموعة orders ✓");
+      }catch(err){
+        console.error(err);
+        legacyMigrationStarted = false;
+        showToast("تعذر نقل الطلبات القديمة — تحقق من قواعد Firestore");
+      }
+    }
   } else {
-    DATA = defaultData();
-    setDoc(STORE_DOC, DATA).catch(err=> console.error(err));
+    DATA = { ...defaultData(), orders: DATA.orders || [] };
+    setDoc(STORE_DOC, storePayload(DATA)).catch(err=> console.error(err));
   }
-  fbReady = true;
-  render();
+  storeReady = true;
+  refreshReadyState();
 }, (err)=>{
   console.error(err);
-  showToast("تعذر الاتصال بـ Firebase — تحقق من firebase-config.js وقواعد Firestore");
+  showToast("تعذر الاتصال ببيانات المتجر — تحقق من Firebase وقواعد Firestore");
+});
+
+// الطلبات: كل طلب Document مستقل داخل orders/{orderId}
+onSnapshot(ORDERS_COL, (snap)=>{
+  const orders = snap.docs
+    .map(orderSnap=>({ ...orderSnap.data(), id: orderSnap.id }))
+    .sort((a,b)=>(b.createdAt || 0) - (a.createdAt || 0));
+  DATA = { ...DATA, orders };
+  ordersReady = true;
+  refreshReadyState();
+}, (err)=>{
+  console.error(err);
+  showToast("تعذر تحميل الطلبات — تحقق من صلاحيات مجموعة orders");
 });
 let currentAdminTab = "dashboard"; // dashboard | inventory | products | orders | finance
 let activeModal = null; // {type, payload}
@@ -468,7 +528,7 @@ function renderAdminPage(){
           <button class="tab-btn ${currentAdminTab==='orders'?'active':''}" onclick="setAdminTab('orders')">الطلبات</button>
           <button class="tab-btn ${currentAdminTab==='finance'?'active':''}" onclick="setAdminTab('finance')">المراجعة المالية</button>
         </div>
-        <button class="btn btn-rose btn-sm" onclick="copyCustomerLink()" title="للتجربة على نفس الجهاز فقط حاليًا"> نسخ الرابط للعملاء</button>
+        <button class="btn btn-rose btn-sm" onclick="copyCustomerLink()" title="للتجربة على نفس الجهاز فقط حاليًا">🔗 نسخ رابط الطلب (تجريبي على نفس الجهاز)</button>
       </div>
     </div>
     <main>
@@ -820,20 +880,46 @@ function renderOrderCard(o, adminView){
       ${stepsHtml}
     </div>`;
 }
-function setOrderStatus(id, status){
+async function setOrderStatus(id, status){
   const o = DATA.orders.find(o=>o.id===id);
   if(!o) return;
+  const previousStatus = o.status;
   o.status = status;
-  saveData(DATA); showToast("تم تحديث حالة الطلب");
+  render();
+  try{
+    await updateDoc(orderDocRef(id), { status });
+    showToast("تم تحديث حالة الطلب");
+  }catch(err){
+    console.error(err);
+    o.status = previousStatus;
+    render();
+    showToast("تعذر تحديث حالة الطلب");
+  }
 }
-function deleteOrder(id){
+async function deleteOrder(id){
   const o = DATA.orders.find(o=>o.id===id);
   if(!o) return;
   if(o.status==="cancelled"){ showToast("الطلب ملغي بالفعل"); return; }
   if(!confirm("سيتم إلغاء الطلب وإرجاع الكميات المستخدمة إلى المخزون. متابعة؟")) return;
+
+  const previousStatus = o.status;
   restockForOrder(o.items);
   o.status = "cancelled";
-  saveData(DATA); showToast("تم إلغاء الطلب وإرجاع المخزون");
+  render();
+
+  try{
+    const batch = writeBatch(dbFS);
+    batch.update(orderDocRef(id), { status:"cancelled" });
+    batch.set(STORE_DOC, storePayload(DATA));
+    await batch.commit();
+    showToast("تم إلغاء الطلب وإرجاع المخزون");
+  }catch(err){
+    console.error(err);
+    deductForOrder(o.items);
+    o.status = previousStatus;
+    render();
+    showToast("تعذر إلغاء الطلب");
+  }
 }
 
 /* ================= FINANCE TAB ================= */
@@ -959,7 +1045,7 @@ function orderModalSetQty(pid, qty){
   if(qty===0) delete activeModal.cart[pid]; else activeModal.cart[pid]=qty;
   render();
 }
-function saveManualOrder(){
+async function saveManualOrder(){
   const name = document.getElementById("order-name").value.trim();
   const phone = document.getElementById("order-phone").value.trim();
   const entries = Object.entries(activeModal.cart);
@@ -971,9 +1057,19 @@ function saveManualOrder(){
   const total = items.reduce((s,it)=> s+it.qty*it.priceEach, 0);
   const costTotal = costOfOrderItems(items);
   const order = { id: uid("K"), source:"هاتف", customerName:name, phone, items, total, costTotal, status:"received", createdAt: Date.now() };
-  DATA.orders.push(order);
+
   deductForOrder(items);
-  activeModal=null; saveData(DATA); showToast("تم تسجيل الطلب ✓");
+  activeModal = null;
+  render();
+  try{
+    await saveNewOrderWithInventory(order);
+    showToast("تم تسجيل الطلب ✓");
+  }catch(err){
+    console.error(err);
+    restockForOrder(items);
+    render();
+    showToast("تعذر تسجيل الطلب");
+  }
 }
 
 /* ================= MODALS (shared) ================= */
@@ -1172,7 +1268,7 @@ function renderOrderForm(){
       </div>
     </div>` : `<div class="footer-note">اختر أطباقك ثم أكمل الطلب من هنا</div>`}
     ${activeCheckout ? renderCheckoutModal(total) : ""}
-  
+    <div class="admin-link"><a href="#admin">دخول الإدارة</a></div>
   `;
 }
 function pickVariant(name, variantId){ customerCart._selection = customerCart._selection||{}; customerCart._selection[name] = variantId; render(); }
@@ -1205,7 +1301,7 @@ function renderCheckoutModal(total){
     </div>
   </div>`;
 }
-function submitCustomerOrder(){
+async function submitCustomerOrder(){
   const name = document.getElementById("cust-name").value.trim();
   const phone = document.getElementById("cust-phone").value.trim();
   if(!phone){ showToast("اكتب رقم الجوال"); return; }
@@ -1218,12 +1314,22 @@ function submitCustomerOrder(){
   const total = items.reduce((s,it)=>s+it.qty*it.priceEach,0);
   const costTotal = costOfOrderItems(items);
   const order = { id: uid("K"), source:"رابط", customerName:name, phone, items, total, costTotal, status:"received", createdAt: Date.now() };
-  DATA.orders.push(order);
+
   deductForOrder(items);
-  localStorage.setItem(CUSTOMER_ORDER_KEY, order.id);
-  customerCart = {}; activeCheckout = false;
-  saveData(DATA);
-  showToast("تم إرسال طلبك ✓");
+  activeCheckout = false;
+  render();
+  try{
+    await saveNewOrderWithInventory(order);
+    localStorage.setItem(CUSTOMER_ORDER_KEY, order.id);
+    customerCart = {};
+    render();
+    showToast("تم إرسال طلبك ✓");
+  }catch(err){
+    console.error(err);
+    restockForOrder(items);
+    render();
+    showToast("تعذر إرسال الطلب");
+  }
 }
 
 function renderTrackView(o){
