@@ -1172,7 +1172,7 @@ function renderOrderForm(){
       </div>
     </div>` : `<div class="footer-note">اختر أطباقك ثم أكمل الطلب من هنا</div>`}
     ${activeCheckout ? renderCheckoutModal(total) : ""}
-    <div class="admin-link"><a href="#admin">دخول الإدارة</a></div>
+  
   `;
 }
 function pickVariant(name, variantId){ customerCart._selection = customerCart._selection||{}; customerCart._selection[name] = variantId; render(); }
