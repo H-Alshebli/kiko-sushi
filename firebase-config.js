@@ -8,12 +8,11 @@
 // 3) من الصفحة الرئيسية للمشروع: اضغط أيقونة </> (Web app) لإضافة تطبيق ويب
 // 4) انسخ الكائن firebaseConfig اللي يطلعه لك واستبدل القيم التالية بالكامل
 // ============================================================
-
 export const firebaseConfig = {
-  apiKey: "ضع_قيمتك_هنا",
-  authDomain: "ضع_قيمتك_هنا",
-  projectId: "ضع_قيمتك_هنا",
-  storageBucket: "ضع_قيمتك_هنا",
-  messagingSenderId: "ضع_قيمتك_هنا",
-  appId: "ضع_قيمتك_هنا"
+  apiKey: "AIzaSyCQM4n0rVHqCImBQSy7YHTzPcaU6KoZYm0",
+  authDomain: "kikosushi-b25b6.firebaseapp.com",
+  projectId: "kikosushi-b25b6",
+  storageBucket: "kikosushi-b25b6.firebasestorage.app",
+  messagingSenderId: "300245475947",
+  appId: "1:300245475947:web:55b4cf6bb35a19a4f7872e"
 };
