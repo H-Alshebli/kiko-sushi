@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // النظام الحالي بدون تسجيل دخول (مستخدم واحد يدير كل شي، وعميل يطلب بدون حساب)
+    // لذلك لا يمكن تقنيًا تمييز "الإدارة" عن "العميل" على مستوى القواعد.
+    // هذه القواعد تحصر القراءة/الكتابة في وثيقة النظام فقط (kiko_sushi/store)
+    // ولا تسمح بأي وصول لأي مكان آخر في قاعدة البيانات.
+    match /kiko_sushi/store {
+      allow read, write: if true;
+    }
+
+    // أي مسار آخر: ممنوع تمامًا
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
